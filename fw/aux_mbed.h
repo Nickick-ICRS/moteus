@@ -192,8 +192,11 @@ class Stm32Index {
  public:
   template <typename PinArray>
   Stm32Index(const Index::Config& config,
+             aux::Index::Status* status,
+             aux::Quadrature::Status* quad_status,
              const PinArray& array,
-             const AuxHardwareConfig& hw_config) {
+             const AuxHardwareConfig& hw_config)
+      :status_(status), quad_value_(quad_status->value) {
     for (size_t i = 0; i < array.size(); i++) {
       const auto& cfg = array[i];
       if (cfg.mode == Pin::Mode::kIndex) {
@@ -201,29 +204,51 @@ class Stm32Index {
           error_ = aux::AuxError::kIndexPinError;
           return;
         }
-        index_.emplace(hw_config.pins[i].mbed, MbedMapPull(cfg.pull));
+        index_ = Stm32GpioInterruptIn::Make(
+            hw_config.pins[i].mbed,
+            &Stm32Index::ISR_CallbackDelegate,
+            reinterpret_cast<uint32_t>(this));
+        if (!index_) {
+          error_ = aux::AuxError::kIndexPinError;
+          return;
+        }
       }
     }
-    if (!index_) {
-      error_ = aux::AuxError::kIndexPinError;
-      return;
-    }
+
+    status_->active = true;
   }
 
   void ISR_Update(aux::Index::Status* status) MOTEUS_CCM_ATTRIBUTE {
+    return;
+  }
+
+  static void ISR_CallbackDelegate(uint32_t my_this) MOTEUS_CCM_ATTRIBUTE {
+    reinterpret_cast<Stm32Index*>(my_this)->ISR_Callback();
+  }
+
+  void ISR_Callback() MOTEUS_CCM_ATTRIBUTE {
     if (error_ != aux::AuxError::kNone) { return; }
 
-    const bool old_raw = status->raw;
-    status->raw = index_->read() ? true : false;
-    status->value = status->raw && !old_raw;
-    status->active = true;
+    const bool old_raw = status_->raw;
+    const bool old_value = status_->value;
+    status_->raw = index_->read() ? true : false;
+    status_->value = status_->raw && !old_raw;
+    status_->active = true;
+    // Update the current position at the moment the index changed
+    if (status_->value && !old_value) {
+      quad_value_ = 0;
+      // Store that index has been found
+      status_->homed = true;
+    }
   }
 
   aux::AuxError error() { return error_; }
 
  private:
   aux::AuxError error_ = aux::AuxError::kNone;
-  std::optional<DigitalIn> index_;
+  aux::Index::Status* const status_;
+  uint32_t& quad_value_;
+  std::optional<Stm32GpioInterruptIn> index_;
 };
 
 struct SpiResult {

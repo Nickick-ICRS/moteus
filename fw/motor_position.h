@@ -776,7 +776,9 @@ class MotorPosition {
             const auto* index_status =
                 &aux_status_[config.incremental_index == 2 ? 1 : 0]->index;
             // TODO: Maybe optionally require a minimum velocity?
-            if (index_status->value) {
+            if (index_status->homed) {
+              // TODO: Maybe reset the homed flag? It (and all config)
+              // is currently read only
               // This is our index time.
               status.offset_value = config.offset;
               status.active_theta = true;

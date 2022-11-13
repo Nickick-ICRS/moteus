@@ -171,12 +171,14 @@ struct Index {
     bool active = false;
     bool raw = false;
     bool value = false;
+    bool homed = false;
 
     template <typename Archive>
     void Serialize(Archive* a) {
       a->Visit(MJ_NVP(active));
       a->Visit(MJ_NVP(raw));
       a->Visit(MJ_NVP(value));
+      a->Visit(MJ_NVP(homed));
     }
   };
 };

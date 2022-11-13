@@ -750,7 +750,8 @@ class AuxPort {
     }
 
     if (config_.index.enabled) {
-      index_.emplace(config_.index, config_.pins, hw_config_);
+      index_.emplace(config_.index, &status_.index, &status_.quadrature,
+                     config_.pins, hw_config_);
       if (index_->error() != aux::AuxError::kNone) {
         status_.error = index_->error();
         index_.reset();
