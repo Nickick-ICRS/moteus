@@ -228,6 +228,7 @@ class Stm32Index {
 
   void ISR_Callback() MOTEUS_CCM_ATTRIBUTE {
     if (error_ != aux::AuxError::kNone) { return; }
+    if (status_->homed) { return; }
 
     const bool old_raw = status_->raw;
     const bool old_value = status_->value;

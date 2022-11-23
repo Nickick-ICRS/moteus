@@ -783,6 +783,7 @@ class MotorPosition {
               status.offset_value = config.offset;
               status.active_theta = true;
               status.active_absolute = true;
+              status_.homed = Status::kRotor;
             }
           }
           updated = true;
