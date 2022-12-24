@@ -777,10 +777,10 @@ class MotorPosition {
                 &aux_status_[config.incremental_index == 2 ? 1 : 0]->index;
             // TODO: Maybe optionally require a minimum velocity?
             if (index_status->homed) {
-              // TODO: Maybe reset the homed flag? It (and all config)
-              // is currently read only
               // This is our index time.
-              status.offset_value = config.offset;
+              status.offset_value = WrapIntCpr(
+                  static_cast<int32_t>(config.offset + status.raw),
+                  config.cpr);
               status.active_theta = true;
               status.active_absolute = true;
               status_.homed = Status::kRotor;
