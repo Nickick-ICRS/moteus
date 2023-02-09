@@ -240,7 +240,8 @@ register protocol.
 
 Pins: select
 
-Nothing is supported here yet, but soon!
+Currently supported are the RLS AksIM-2 encoder, and a transparent
+UART tunnel.
 
 ### Pin Options ###
 
@@ -434,7 +435,7 @@ be set to NOP (0x50).
 
 #### A.1.d Errors ####
 
-*0x30, 0x31* - read/write error
+*0x30, 0x31* - write/read error
 
 - `varuint` => register number
 - `varuint` => error number
@@ -503,6 +504,12 @@ values.
 - int8 => 1 LSB => 0.05 l/s^2
 - int16 => 1 LSB => 0.001 l/s^2
 - int32 => 1 LSB => 0.00001 l/s^2
+
+#### A.2.a.9 PWM and kp/kd scale (unitless) ####
+
+- int8 => 1 LSB => (1/127) - 0.007874
+- int16 => 1 LSB => (1/32767) - 0.000030519
+- int32 => 1 LSB => (1/2147483647) - 4.657e-10
 
 ### A.2.b Registers ###
 
@@ -628,6 +635,11 @@ A fault code which will be set if the primary mode is 1 (Fault).
 * 39 - *outside limit* - an attempt was made to start position control
   while outside the bounds configured by `servopos.position_min` and
   `servopos.position_max`.
+* 40 - *under voltage* - the voltage was too low
+* 41 - *config changed* - a configuration value was changed during
+  operation that requires a stop
+* 42 - *theta invalid* - no valid commutation encoder is available
+* 43 - *position invalid* - no valid output encoder is available
 
 The full list can be found at: [fw/error.h](../fw/error.h#L25)
 
@@ -828,7 +840,50 @@ This reports the feedforward contribution in the PID controller.
 Mode: Read
 
 This reports the total commanded torque from the position mode
-controller.
+controller.  This is also reported in 0x03a.
+
+### 0x038 - Control Position ###
+
+Mode: Read
+
+This reports the current trajectory control position, in modes where
+that is valid.  When velocity or acceleration limiting is enabled, the
+control position will follow the desired limits to achieve the command
+position.
+
+### 0x039 - Control Velocity ###
+
+Mode: Read
+
+This reports the current velocity control value, in modes where that
+is valid.  When velocity or acceleration limiting is enabled, the
+control velocity will follow the desired limits to achieve the control
+position and velocity.
+
+### 0x03a - Control Torque ###
+
+Mode: Read
+
+The torque commanded by the control loop.  This is the same as 0x034.
+
+### 0x03b - Position Error ###
+
+Mode: Read
+
+The current sensed position minus the control position.
+
+### 0x03c - Velocity Error ###
+
+Mode: Read
+
+The current sensed velocity minus the control velocity.
+
+### 0x03d - Torque Error ###
+
+Mode: Read
+
+The current sensed torque minus the control torque.
+
 
 ### 0x040 - Stay within lower bound ###
 
@@ -973,6 +1028,27 @@ registers are associated with pins 1-5, regardless of whether they are
 configured as an analog input.  Each value is scaled as a PWM from 0
 to 1.
 
+### 0x070 - Millisecond Counter ###
+
+Mode: Read only
+
+Increments once per millisecond.  It wraps at the maximum value for
+the queried type to the minimum value for that type.  For floating
+point types, it counts integers from 0 to 8388608.
+
+### 0x071 - Clock Trim ###
+
+Mode: Read/write
+
+An integer which can trim the clock rate of the microprocessor on the
+moteus controller.  Positive values speed it up and negative values
+slow it down.  Each integer step roughly corresponds to a 0.25% change
+in speed.
+
+WARNING: Changing the speed affects all processes driven by the
+microcontroller, including CAN communication.  Thus setting this to a
+non-zero value may prevent future CAN communications.
+
 
 ### 0x100 - Model Number ###
 
@@ -1036,6 +1112,24 @@ When sent with any value, the servo will require that any index
 position be re-located before control can begin.  Regardless, the
 position will reset to an arbitrary value consistent with the current
 encoder settings.
+
+### 0x140 - Driver Fault 1 ###
+
+Mode: Read only
+
+The exact bitfield reported by the motor driver in fault conditions
+for fault register 1.  Up to 16 bits may be set.  This will only be
+non-zero if the current mode is fault (1) and the fault code is 33
+(motor driver fault).
+
+### 0x141 - Driver Fault 2 ###
+
+Mode: Read only.
+
+The exact bitfield reported by the motor driver in fault conditions
+for fault register 2.  Up to 16 bits may be set.  This will only be
+non-zero if the current mode is fault (1) and the fault code is 33
+(motor driver fault).
 
 ## A.3 Example ##
 
@@ -1787,6 +1881,28 @@ The frequency to operate the SPI bus at.  The default is 12000000,
 which is required for AS5047P devices.  Other devices may support
 lower rates.
 
+## `aux[12].uart.mode` ##
+
+The type of UART device.
+
+* 0 - Disabled
+* 1 - RLS AksIM-2
+* 2 - Tunnel
+* 3 - Per-control cycle debug information (undocumented)
+
+When the tunnel mode is selected, data may be sent or received using
+the CAN diagnostic protocol.  For aux1, use diagnostic channel 2.  For
+aux2, use diagnostic channel 3.
+
+## `aux[12].uart.baud_rate` ##
+
+The baud rate to use for the UART.
+
+## `aux[12].uart.poll_rate_us` ##
+
+For encoder modes, the interval at which to poll the encoder for new
+position information.
+
 ## `aux[12].quadrature.enabled` ##
 
 True/non-zero if quadrature input should be read from this port.
@@ -2014,6 +2130,13 @@ Or, if already built, flashed using:
 
 ```
 ./fw/flash.py
+```
+
+This may require the appropriate binutils to be installed, on Ubuntu
+this can be accomplished with:
+
+```
+sudo apt install binutils-arm-none-eabi
 ```
 
 ### openocd ###

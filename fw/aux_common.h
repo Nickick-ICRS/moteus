@@ -65,6 +65,8 @@ struct UartEncoder {
     enum Mode {
       kDisabled,
       kAksim2,
+      kTunnel,
+      kDebug,
 
       kNumModes,
     };
@@ -147,12 +149,14 @@ struct Hall {
     bool active = false;
     uint8_t bits = 0;
     uint8_t count = 0;
+    uint16_t error = 0;
 
     template <typename Archive>
     void Serialize(Archive* a) {
       a->Visit(MJ_NVP(active));
       a->Visit(MJ_NVP(bits));
       a->Visit(MJ_NVP(count));
+      a->Visit(MJ_NVP(error));
     }
   };
 };
@@ -426,6 +430,8 @@ struct IsEnum<moteus::aux::UartEncoder::Config::Mode> {
     return {{
         { M::kDisabled, "disabled" },
         { M::kAksim2, "aksim2" },
+        { M::kTunnel, "tunnel" },
+        { M::kDebug, "debug" },
       }};
   }
 };

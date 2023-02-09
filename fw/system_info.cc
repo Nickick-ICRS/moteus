@@ -33,12 +33,18 @@ struct SystemInfoData {
   uint32_t idle_rate = 0;
   uint32_t can_reset_count = 0;
 
+  // We deliberately start this counter near to int32 overflow so that
+  // any applications that use it will likely have to handle it
+  // properly.
+  uint32_t ms_count = (1ull<<31) - 300000;
+
   template <typename Archive>
   void Serialize(Archive* a) {
     a->Visit(MJ_NVP(pool_size));
     a->Visit(MJ_NVP(pool_available));
     a->Visit(MJ_NVP(idle_rate));
     a->Visit(MJ_NVP(can_reset_count));
+    a->Visit(MJ_NVP(ms_count));
   }
 };
 }
@@ -51,6 +57,7 @@ class SystemInfo::Impl {
   }
 
   void PollMillsecond() {
+    data_.ms_count++;
     ms_count_++;
     if (ms_count_ >= 10) {
       ms_count_ = 0;
@@ -92,6 +99,10 @@ void SystemInfo::PollMillisecond() {
 
 void SystemInfo::SetCanResetCount(uint32_t value) {
   impl_->SetCanResetCount(value);
+}
+
+uint32_t SystemInfo::millisecond_counter() const {
+  return impl_->data_.ms_count;
 }
 
 }

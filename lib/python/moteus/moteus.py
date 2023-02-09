@@ -205,6 +205,13 @@ class Register(enum.IntEnum):
     POSITION_FEEDFORWARD = 0x033
     POSITION_COMMAND = 0x034
 
+    CONTROL_POSITION = 0x038
+    CONTROL_VELOCITY = 0x039
+    CONTROL_TORQUE = 0x03a
+    POSITION_ERROR = 0x03b
+    VELOCITY_ERROR = 0x03c
+    TORQUE_ERROR = 0x03d
+
     COMMAND_WITHIN_LOWER_BOUND = 0x040
     COMMAND_WITHIN_UPPER_BOUND = 0x041
     COMMAND_WITHIN_FEEDFORWARD_TORQUE = 0x042
@@ -238,6 +245,9 @@ class Register(enum.IntEnum):
     AUX2_ANALOG_IN4 = 0x06b
     AUX2_ANALOG_IN5 = 0x06c
 
+    MILLISECOND_COUNTER = 0x070
+    CLOCK_TRIM = 0x071
+
     REGISTER_MAP_VERSION = 0x102
     SERIAL_NUMBER = 0x120
     SERIAL_NUMBER1 = 0x120
@@ -247,6 +257,10 @@ class Register(enum.IntEnum):
     REZERO = 0x130
     SET_OUTPUT_NEAREST = 0x130
     SET_OUTPUT_EXACT = 0x131
+    REQUIRE_REINDEX = 0x132
+
+    DRIVER_FAULT1 = 0x140
+    DRIVER_FAULT2 = 0x141
 
 
 class Mode(enum.IntEnum):
@@ -429,6 +443,18 @@ def parse_register(parser, register, resolution):
         return parser.read_torque(resolution)
     elif register == Register.POSITION_COMMAND:
         return parser.read_torque(resolution)
+    elif register == Register.CONTROL_POSITION:
+        return parser.read_position(resolution)
+    elif register == Register.CONTROL_VELOCITY:
+        return parser.read_velocity(resolution)
+    elif register == Register.CONTROL_TORQUE:
+        return parser.read_torque(resolution)
+    elif register == Register.POSITION_ERROR:
+        return parser.read_position(resolution)
+    elif register == Register.VELOCITY_ERROR:
+        return parser.read_velocity(resolution)
+    elif register == Register.TORQUE_ERROR:
+        return parser.read_torque(resolution)
     elif register == Register.ENCODER_0_POSITION:
         return parser.read_position(resolution)
     elif register == Register.ENCODER_0_VELOCITY:
@@ -462,6 +488,10 @@ def parse_register(parser, register, resolution):
           register == Register.AUX2_ANALOG_IN4 or
           register == Register.AUX2_ANALOG_IN5):
         return parser.read_pwm(resolution)
+    elif register == Register.MILLISECOND_COUNTER:
+        return parser.read_int(resolution)
+    elif register == Register.CLOCK_TRIM:
+        return parser.read_int(resolution)
     else:
         # We don't know what kind of value this is, so we don't know
         # the units.
@@ -512,7 +542,7 @@ def make_parser(id):
     return parse
 
 
-def parse_diagnostic_data(message):
+def parse_diagnostic_data(message, channel):
     data = message.data
 
     if len(data) < 3:
@@ -520,7 +550,7 @@ def parse_diagnostic_data(message):
 
     if data[0] != mp.STREAM_SERVER_DATA:
         return None
-    if data[1] != 1:
+    if data[1] != channel:
         return None
     datalen, nextoff = mp.read_varuint(2, data)
     if datalen is None:
@@ -539,11 +569,11 @@ class DiagnosticResult:
         return f'{self.id}/{self.data}'
 
 
-def make_diagnostic_parser(id):
+def make_diagnostic_parser(id, channel):
     def parse(data):
         result = DiagnosticResult()
         result.id = id
-        result.data = parse_diagnostic_data(data)
+        result.data = parse_diagnostic_data(data, channel)
         return result
     return parse
 
@@ -573,7 +603,6 @@ class Controller:
         self.current_resolution = current_resolution
         self.transport = transport
         self._parser = make_parser(id)
-        self._diagnostic_parser = make_diagnostic_parser(id)
         self._can_prefix = can_prefix
 
         # Pre-compute our query string.
@@ -634,11 +663,6 @@ class Controller:
 
         return buf.getvalue()
 
-    def _extract(self, value):
-        if len(value):
-            return value[0]
-        return None
-
     def _make_command(self, *, query, source=0):
         result = cmd.Command()
 
@@ -656,8 +680,32 @@ class Controller:
         return result;
 
     async def query(self, **kwargs):
-        return self._extract(await self._get_transport().cycle(
-            [self.make_query(**kwargs)]))
+        return await self.execute(self.make_query(**kwargs))
+
+    def make_custom_query(self, to_query_fields):
+        """Return a moteus.Command structure with data required to query the
+        registers given by the 'to_query_fields' dictionary of
+        registers to resolutions.
+        """
+
+        result = self._make_command(query=True)
+
+        buf = io.BytesIO()
+        writer = Writer(buf)
+
+        min_val = int(min(to_query_fields.keys()))
+        max_val = int(max(to_query_fields.keys()))
+        c = mp.WriteCombiner(writer, 0x10, min_val,
+                             [to_query_fields.get(i, mp.IGNORE)
+                              for i in range(min_val, max_val + 1)])
+        for _ in range(min_val, max_val + 1):
+            c.maybe_write()
+
+        result.data = buf.getvalue()
+        return result
+
+    async def custom_query(self, *args, **kwargs):
+        return await self.execute(self.make_custom_query(*args, **kwargs))
 
     def make_stop(self, *, query=False):
         """Return a moteus.Command structure with data necessary to send a
@@ -679,8 +727,7 @@ class Controller:
         return result
 
     async def set_stop(self, *args, **kwargs):
-        return self._extract(await self._get_transport().cycle(
-            [self.make_stop(**kwargs)]))
+        return await self.execute(self.make_stop(**kwargs))
 
     def make_set_output(self, *,
                         position=0.0,
@@ -717,8 +764,7 @@ class Controller:
             position=position, query=query, cmd=Register.SET_OUTPUT_EXACT)
 
     async def set_output(self, *args, cmd=None, **kwargs):
-        return self._extract(await self._get_transport().cycle(
-            [self.make_set_output(**kwargs, cmd=cmd)]))
+        return await self.execute(self.make_set_output(**kwargs, cmd=cmd))
 
     async def set_output_nearest(self, *args, **kwargs):
         return await self.set_output(cmd=Register.SET_OUTPUT_NEAREST, **kwargs)
@@ -736,9 +782,22 @@ class Controller:
             position=rezero, query=query, cmd=Register.SET_OUTPUT_NEAREST)
 
     async def set_rezero(self, *args, **kwargs):
-        return self._extract(await self._get_transport().cycle(
-            [self.make_rezero(**kwargs)]))
+        return await self.execute(self.make_rezero(**kwargs))
 
+    def make_require_reindex(self):
+        result = self._make_command(query=False)
+
+        data_buf = io.BytesIO()
+        writer = Writer(data_buf)
+        writer.write_int8(mp.WRITE_INT8 | 0x01)
+        writer.write_varuint(Register.REQUIRE_REINDEX)
+        writer.write_int8(1)
+
+        result.data = data_buf.getvalue()
+        return result
+
+    async def set_require_reindex(self):
+        return await self.execute(self.make_require_reindex())
 
     def make_position(self,
                       *,
@@ -815,8 +874,7 @@ class Controller:
         return result
 
     async def set_position(self, *args, **kwargs):
-        return self._extract(await self._get_transport().cycle(
-            [self.make_position(**kwargs)]))
+        return await self.execute(self.make_position(**kwargs))
 
     def make_vfoc(self,
                   *,
@@ -871,8 +929,7 @@ class Controller:
         return result
 
     async def set_vfoc(self, *args, **kwargs):
-        return self._extract(await self._get_transport().cycle(
-            [self.make_vfoc(**kwargs)]))
+        return await self.execute(self.make_vfoc(**kwargs))
 
     def make_current(self,
                      *,
@@ -916,8 +973,7 @@ class Controller:
         return result
 
     async def set_current(self, *args, **kwargs):
-        return self._extract(await self._get_transport().cycle(
-            [self.make_current(**kwargs)]))
+        return await self.execute(self.make_current(**kwargs))
 
     def make_stay_within(
             self,
@@ -981,8 +1037,7 @@ class Controller:
         return result
 
     async def set_stay_within(self, *args, **kwargs):
-        return self._extract(await self._get_transport().cycle(
-            [self.make_stay_within(**kwargs)]))
+        return await self.execute(self.make_stay_within(**kwargs))
 
     def make_brake(self, *, query=False):
         result = self._make_command(query=query)
@@ -1001,8 +1056,7 @@ class Controller:
         return result
 
     async def set_brake(self, *args, **kwargs):
-        return self._extract(await self._get_transport().cycle(
-            [self.make_brake(**kwargs)]))
+        return await self.execute(self.make_brake(**kwargs))
 
     def make_write_gpio(self, aux1=None, aux2=None, query=False):
         """Return a moteus.Command structure with data necessary to set one or
@@ -1035,8 +1089,7 @@ class Controller:
         return result
 
     async def set_write_gpio(self, *args, **kwargs):
-        return self._extract(await self._get_transport().cycle(
-            [self.make_write_gpio(**kwargs)]))
+        return await self.execute(self.make_write_gpio(**kwargs))
 
     def make_read_gpio(self):
         """Return a moteus.Command structure with data necessary to read all
@@ -1073,7 +1126,7 @@ class Controller:
         return bytes([result.values[Register.AUX1_GPIO_STATUS],
                       result.values[Register.AUX2_GPIO_STATUS]])
 
-    def make_diagnostic_write(self, data):
+    def make_diagnostic_write(self, data, channel=1):
         result = self._make_command(query=False)
 
         # CAN-FD frames can be at most 64 bytes long
@@ -1082,7 +1135,7 @@ class Controller:
         data_buf = io.BytesIO()
         writer = Writer(data_buf)
         writer.write_int8(mp.STREAM_CLIENT_DATA)
-        writer.write_int8(1)  # channel
+        writer.write_int8(channel)  # channel
         writer.write_int8(len(data))
         data_buf.write(data)
 
@@ -1092,16 +1145,16 @@ class Controller:
     async def send_diagnostic_write(self, *args, **kwargs):
         await self._get_transport().cycle([self.make_diagnostic_write(**kwargs)])
 
-    def make_diagnostic_read(self, max_length=48, source=0):
+    def make_diagnostic_read(self, max_length=48, channel=1):
         result = self._make_command(query=True)
 
         data_buf = io.BytesIO()
         writer = Writer(data_buf)
         writer.write_int8(mp.STREAM_CLIENT_POLL)
-        writer.write_int8(1)
+        writer.write_int8(channel)
         writer.write_int8(max_length)
 
-        result.parse = self._diagnostic_parser
+        result.parse = make_diagnostic_parser(self.id, channel)
 
         result.data = data_buf.getvalue()
         return result
@@ -1109,6 +1162,29 @@ class Controller:
     async def diagnostic_read(self, *args, **kwargs):
         return await self._get_transport().cycle(
             [self.make_diagnostic_read(**kwargs)])
+
+    def make_set_trim(self, *, trim=0):
+        result = self._make_command(query=False)
+
+        buf = io.BytesIO()
+        writer = Writer(buf)
+        writer.write_int8(mp.WRITE_INT32 | 0x01)
+        writer.write_varuint(Register.CLOCK_TRIM)
+        writer.write_int32(trim)
+
+        result.data = buf.getvalue()
+        return result
+
+    async def set_trim(self, *args, **kwargs):
+        return await self.execute(self.make_set_trim(*args, **kwargs))
+
+    def _extract(self, value):
+        if len(value):
+            return value[0]
+        return None
+
+    async def execute(self, command):
+        return self._extract(await self._get_transport().cycle([command]))
 
 
 class CommandError(RuntimeError):
@@ -1121,9 +1197,10 @@ class Stream:
     """Presents a python file-like interface to the diagnostic stream of a
     moteus controller."""
 
-    def __init__(self, controller, verbose=False):
+    def __init__(self, controller, verbose=False, channel=1):
         self.controller = controller
         self.verbose = verbose
+        self.channel = channel
 
         self.lock = asyncio.Lock()
         self._read_data = b''
@@ -1139,7 +1216,8 @@ class Stream:
             to_write, self._write_data = self._write_data[0:61], self._write_data[61:]
 
             async with self.lock:
-                await self.controller.send_diagnostic_write(data=to_write)
+                await self.controller.send_diagnostic_write(
+                    data=to_write, channel=self.channel)
 
     async def read(self, size, block=True):
         while ((block == True and len(self._read_data) < size)
@@ -1147,7 +1225,8 @@ class Stream:
             bytes_to_request = min(61, size - len(self._read_data))
 
             async with self.lock:
-                these_results = await self.controller.diagnostic_read(bytes_to_request)
+                these_results = await self.controller.diagnostic_read(
+                    bytes_to_request, channel=self.channel)
 
             this_data = b''.join(x.data for x in these_results if x.data)
 
@@ -1182,7 +1261,8 @@ class Stream:
     async def _read_maybe_empty_line(self):
         while b'\n' not in self._read_data and b'\r' not in self._read_data:
             async with self.lock:
-                these_results = await self.controller.diagnostic_read(61)
+                these_results = await self.controller.diagnostic_read(
+                    61, channel=self.channel)
 
             this_data = b''.join(x.data for x in these_results if x.data)
 

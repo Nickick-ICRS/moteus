@@ -668,10 +668,10 @@ class Device:
             archive = reader.Type.from_binary(io.BytesIO(schema), name=element)
             item = QtWidgets.QTreeWidgetItem(self._config_tree_item)
             item.setText(0, element)
-            flags = QtCore.Qt.ItemFlags(
-                int(QtCore.Qt.ItemIsEditable) |
-                int(QtCore.Qt.ItemIsSelectable) |
-                int(QtCore.Qt.ItemIsEnabled))
+
+            flags = (QtCore.Qt.ItemIsEditable |
+                     QtCore.Qt.ItemIsSelectable |
+                     QtCore.Qt.ItemIsEnabled)
 
             _add_schema_item(item, archive, terminal_flags=flags)
             self._config_tree_items[element] = item
@@ -834,9 +834,9 @@ class Device:
             if key == '':
                 item.setText(1, value)
                 item.setFlags(QtCore.Qt.ItemFlags(
-                    int(QtCore.Qt.ItemIsEditable) |
-                    int(QtCore.Qt.ItemIsSelectable) |
-                    int(QtCore.Qt.ItemIsEnabled)))
+                    QtCore.Qt.ItemIsEditable |
+                    QtCore.Qt.ItemIsSelectable |
+                    QtCore.Qt.ItemIsEnabled))
                 return
 
             fields = key.split('.', 1)

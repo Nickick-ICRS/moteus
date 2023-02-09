@@ -23,8 +23,8 @@ class Command(enum.IntEnum):
     WRITE_REGISTERS = 0x00
     READ_REGISTERS = 0x10
     REPLY = 0x20
-    READ_ERROR = 0x30
-    WRITE_ERROR = 0x31
+    WRITE_ERROR = 0x30
+    READ_ERROR = 0x31
     STREAM_CLIENT_TO_SERVER = 0x40
     STREAM_SERVER_TO_CLIENT = 0x41
     STREAM_CLIENT_POLL_SERVER = 0x42
@@ -136,11 +136,17 @@ SCALE_TYPES = [
                moteus.Register.ABS_POSITION,
                moteus.Register.COMMAND_POSITION,
                moteus.Register.COMMAND_STOP_POSITION,
-               moteus.Register.COMMAND_WITHIN_LOWER_BOUND],
+               moteus.Register.COMMAND_WITHIN_LOWER_BOUND,
+               moteus.Register.ENCODER_0_POSITION,
+               moteus.Register.ENCODER_1_POSITION,
+               moteus.Register.ENCODER_2_POSITION,],
               0.01, 0.0001, 0.00001),
     ScaleType([moteus.Register.VELOCITY,
                moteus.Register.COMMAND_VELOCITY,
-               moteus.Register.COMMAND_VELOCITY_LIMIT],
+               moteus.Register.COMMAND_VELOCITY_LIMIT,
+               moteus.Register.ENCODER_0_VELOCITY,
+               moteus.Register.ENCODER_1_VELOCITY,
+               moteus.Register.ENCODER_2_VELOCITY,],
               0.1, 0.00025, 0.00001),
     ScaleType([moteus.Register.TORQUE,
                moteus.Register.COMMAND_FEEDFORWARD_TORQUE,
@@ -199,11 +205,11 @@ def format_value(reg, typecode, value):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('hexcan', nargs='?',
+    parser.add_argument('hexcan', nargs='*',
                         help='Hex encoded CAN frame')
     args = parser.parse_args()
 
-    stream = Stream(bytes.fromhex(args.hexcan))
+    stream = Stream(bytes.fromhex(''.join(args.hexcan)))
 
     while stream.remaining():
         data, cmd = stream.read_int8()

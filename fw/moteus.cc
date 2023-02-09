@@ -27,6 +27,7 @@
 #include "mjlib/multiplex/micro_stream_datagram.h"
 
 #include "fw/board_debug.h"
+#include "fw/clock_manager.h"
 #include "fw/firmware_info.h"
 #include "fw/git_info.h"
 #include "fw/millisecond_timer.h"
@@ -103,58 +104,6 @@ void SetupClock() {
   }
 #endif
 }
-}
-
-namespace {
-class ClockManager {
- public:
-  ClockManager(MillisecondTimer* timer,
-               micro::PersistentConfig& persistent_config,
-               micro::CommandManager& command_manager)
-      : timer_(timer) {
-    persistent_config.Register("clock", &clock_, [this]() {
-        this->UpdateConfig();
-      });
-    command_manager.Register("clock", [this](auto&& command, auto&& response) {
-        this->Command(command, response);
-      });
-  }
-
-  void UpdateConfig() {
-    const int32_t trim = std::max<int32_t>(0, std::min<int32_t>(127, clock_.hsitrim));
-    RCC->ICSCR = (RCC->ICSCR & ~0xff000000) | (trim << 24);
-  }
-
-  void Command(const std::string_view& command,
-               const micro::CommandManager::Response& response) {
-    if (command == "us") {
-      snprintf(output_, sizeof(output_), "%" PRIu32 "\r\n", timer_->read_us());
-      WriteMessage(output_, response);
-    } else {
-      WriteMessage("ERR unknown clock\r\n", response);
-    }
-  }
-
-  void WriteMessage(const std::string_view& message,
-                    const micro::CommandManager::Response& response) {
-    micro::AsyncWrite(*response.stream, message, response.callback);
-  }
-
- private:
-  struct Config {
-    int32_t hsitrim = 64;
-
-    template <typename Archive>
-    void Serialize(Archive* a) {
-      a->Visit(MJ_NVP(hsitrim));
-    }
-  };
-
-  MillisecondTimer* const timer_;
-  Config clock_;
-  char output_[16] = {};
-};
-
 }
 
 #if defined(TARGET_STM32G4)
@@ -246,7 +195,7 @@ int main(void) {
   }();
   MJ_ASSERT(compatible);
 
-  micro::SizedPool<16000> pool;
+  micro::SizedPool<20000> pool;
 
   HardwareUart rs485(&pool, &timer, []() {
       HardwareUart::Options options;
@@ -274,7 +223,13 @@ int main(void) {
       return options;
     }());
   FDCanMicroServer fdcan_micro_server(&fdcan);
-  multiplex::MicroServer multiplex_protocol(&pool, &fdcan_micro_server, {});
+  multiplex::MicroServer multiplex_protocol(
+      &pool, &fdcan_micro_server,
+      []() {
+        multiplex::MicroServer::Options options;
+        options.max_tunnel_streams = 3;
+        return options;
+      }());
 #else
 #error "Unknown target"
 #endif
@@ -299,7 +254,11 @@ int main(void) {
   MoteusController moteus_controller(
       &pool, &persistent_config,
       &command_manager,
-      &telemetry_manager, &timer,
+      &telemetry_manager,
+      &multiplex_protocol,
+      &clock,
+      &system_info,
+      &timer,
       &firmware_info);
 
   BoardDebug board_debug(
@@ -346,7 +305,7 @@ int main(void) {
   command_manager.AsyncStart();
   multiplex_protocol.Start(moteus_controller.multiplex_server());
 
-  auto old_time = timer.read_ms();
+  auto old_time = timer.read_us();
 
   for (;;) {
     rs485.Poll();
@@ -354,17 +313,19 @@ int main(void) {
     fdcan_micro_server.Poll();
 #endif
     moteus_controller.Poll();
+    multiplex_protocol.Poll();
 
-    const auto new_time = timer.read_ms();
+    const auto new_time = timer.read_us();
 
-    if (new_time != old_time) {
+    const auto delta_us = MillisecondTimer::subtract_us(new_time, old_time);
+    if (delta_us >= 1000) {
       telemetry_manager.PollMillisecond();
       system_info.PollMillisecond();
       moteus_controller.PollMillisecond();
       board_debug.PollMillisecond();
       system_info.SetCanResetCount(fdcan_micro_server.can_reset_count());
 
-      old_time = new_time;
+      old_time += 1000;
     }
 
     SystemInfo::idle_count++;

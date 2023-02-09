@@ -465,7 +465,8 @@ class Stream:
         self.args = args
         self.controller = moteus.Controller(target_id, transport=transport,
                                             can_prefix=args.can_prefix)
-        self.stream = moteus.Stream(self.controller, verbose=args.verbose)
+        self.stream = moteus.Stream(self.controller, verbose=args.verbose,
+                                    channel=args.diagnostic_channel)
 
     async def do_console(self):
         console_stdin = aiostream.AioStream(sys.stdin.buffer.raw)
@@ -643,6 +644,7 @@ class Stream:
 
     async def write_flash(self, elfs):
         write_ctx = FlashContext(elfs)
+        next_block = None
         while True:
             next_block = write_ctx.get_next_block()
             cmd = f"w {next_block.address:x} {next_block.data.hex()}"
@@ -652,6 +654,15 @@ class Stream:
             done = write_ctx.advance_block()
             if done:
                 break
+
+        # Write enough ff's to ensure we get to an even 8 byte
+        # boundary.  Otherwise the bootloader may not actually flush
+        # our writes out.
+        final_address = next_block.address + len(next_block.data)
+        remaining_to_flush = 8 - (final_address & 0x07)
+        if remaining_to_flush:
+            cmd = f"w {final_address:x} {'ff' * remaining_to_flush}"
+            result = await self.command(cmd)
 
         verify_ctx = FlashContext(elfs)
         while True:
@@ -1539,6 +1550,20 @@ async def async_main():
 
     group.add_argument('--calibrate', action='store_true',
                         help='calibrate the motor, requires full freedom of motion')
+
+    group.add_argument('--restore-cal', metavar='FILE', type=str,
+                        help='restore calibration from logged data')
+    group.add_argument('--zero-offset', action='store_true',
+                        help='set the motor\'s position offset')
+    group.add_argument('--set-offset', metavar='O',
+                       type=float,
+                       help='set the motor\'s position offset')
+
+
+    parser.add_argument('--diagnostic-channel', type=int, default=1,
+                        help='diagnostic channel to use for --console')
+
+    # Top level calibration parameters.
     parser.add_argument('--cal-invert', action='store_true',
                         help='if set, then commands and encoder will oppose')
     parser.add_argument('--cal-hall', action='store_true',
@@ -1605,14 +1630,6 @@ async def async_main():
                         help='maximum allowed error in calibration')
     parser.add_argument('--cal-raw', metavar='FILE', type=str,
                         help='write raw calibration data')
-
-    group.add_argument('--restore-cal', metavar='FILE', type=str,
-                        help='restore calibration from logged data')
-    group.add_argument('--zero-offset', action='store_true',
-                        help='set the motor\'s position offset')
-    group.add_argument('--set-offset', metavar='O',
-                       type=float,
-                       help='set the motor\'s position offset')
 
     args = parser.parse_args()
 

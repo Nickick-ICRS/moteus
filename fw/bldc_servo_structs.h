@@ -153,11 +153,14 @@ struct BldcServoStatus {
   // This is measured in the same units as MotorPosition's integral
   // units, which is 48 bits to represent 1.0 unit of output
   // revolution.
-  std::optional<int64_t> control_position;
+  std::optional<int64_t> control_position_raw;
+  float control_position = std::numeric_limits<float>::quiet_NaN();
   std::optional<float> control_velocity;
   float position_to_set = std::numeric_limits<float>::quiet_NaN();
   float timeout_s = 0.0;
   bool trajectory_done = false;
+
+  float torque_error_Nm = 0.0f;
 
   float sin = 0.0f;
   float cos = 0.0f;
@@ -243,11 +246,14 @@ struct BldcServoStatus {
     a->Visit(MJ_NVP(pid_q));
     a->Visit(MJ_NVP(pid_position));
 
+    a->Visit(MJ_NVP(control_position_raw));
     a->Visit(MJ_NVP(control_position));
     a->Visit(MJ_NVP(control_velocity));
     a->Visit(MJ_NVP(position_to_set));
     a->Visit(MJ_NVP(timeout_s));
     a->Visit(MJ_NVP(trajectory_done));
+
+    a->Visit(MJ_NVP(torque_error_Nm));
 
     a->Visit(MJ_NVP(sin));
     a->Visit(MJ_NVP(cos));

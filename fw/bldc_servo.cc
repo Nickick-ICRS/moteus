@@ -210,6 +210,8 @@ IRQn_Type FindUpdateIrq(TIM_TypeDef* timer) {
     return TIM3_IRQn;
   } else if (timer == TIM4) {
     return TIM4_IRQn;
+  } else if (timer == TIM5) {
+    return TIM5_IRQn;
   }
   MJ_ASSERT(false);
   return TIM2_IRQn;
@@ -345,7 +347,8 @@ class BldcServo::Impl {
     if (options_.debug_uart_out != NC) {
       const auto uart = pinmap_peripheral(
           options_.debug_uart_out, PinMap_UART_TX);
-      debug_uart_ = reinterpret_cast<USART_TypeDef*>(uart);
+      debug_uart_ = onboard_debug_uart_ =
+          reinterpret_cast<USART_TypeDef*>(uart);
     }
   }
 
@@ -436,6 +439,10 @@ class BldcServo::Impl {
     return motor_position_->config();
   }
 
+  const MotorPosition::Config* motor_position_config() const {
+    return motor_position_->config();
+  }
+
   bool is_torque_constant_configured() const {
     return motor_.v_per_hz != 0.0f;
   }
@@ -488,6 +495,23 @@ class BldcServo::Impl {
     if (mode == kEnabling) {
       motor_driver_->Enable(true);
       *mode_volatile = kCalibrating;
+    }
+
+    // Because the aux ports can be configured after us, we just poll
+    // periodically to see if we need to point our debug uart
+    // somewhere different.
+    auto* desired_debug_uart =
+        [&]() {
+          if (aux1_port_->debug_uart()) {
+            return aux1_port_->debug_uart();
+          } else if (aux2_port_->debug_uart()) {
+            return aux2_port_->debug_uart();
+          } else {
+            return onboard_debug_uart_;
+          }
+        }();
+    if (desired_debug_uart != debug_uart_) {
+      debug_uart_ = desired_debug_uart;
     }
   }
 
@@ -800,6 +824,7 @@ class BldcServo::Impl {
       status_.position = 0.0f;
       status_.velocity = 0.0f;
       status_.torque_Nm = 0.0f;
+      status_.torque_error_Nm = 0.0f;
     }
 
 #ifdef MOTEUS_PERFORMANCE_MEASURE
@@ -1029,6 +1054,9 @@ class BldcServo::Impl {
     status_.torque_Nm = torque_on() ? (
         current_to_torque(status_.q_A) /
         motor_position_->config()->rotor_to_output_ratio) : 0.0f;
+    if (!torque_on()) {
+      status_.torque_error_Nm = 0.0f;
+    }
 #ifdef MOTEUS_EMIT_CURRENT_TO_DAC
     DAC1->DHR12R1 = static_cast<uint32_t>(dq.d * 400.0f + 2048.0f);
 #endif
@@ -1292,7 +1320,8 @@ class BldcServo::Impl {
 
     if (!position_pid_active || force_clear == kAlwaysClear) {
       status_.pid_position.Clear();
-      status_.control_position = {};
+      status_.control_position_raw = {};
+      status_.control_position = std::numeric_limits<float>::quiet_NaN();
       status_.control_velocity = {};
     }
   }
@@ -1822,7 +1851,7 @@ class BldcServo::Impl {
       status_.position =
           static_cast<float>(
               static_cast<int32_t>(
-                  *status_.control_position >> 32)) /
+                  *status_.control_position_raw >> 32)) /
           65536.0f;
       status_.velocity = velocity_command;
 
@@ -1832,7 +1861,7 @@ class BldcServo::Impl {
       // with a fixed voltage drive based on the desired position.
       const float synthetic_electrical_theta =
           WrapZeroToTwoPi(
-              MotorPosition::IntToFloat(*status_.control_position)
+              MotorPosition::IntToFloat(*status_.control_position_raw)
               / motor_position_->config()->rotor_to_output_ratio
               * motor_.poles
               * 0.5f
@@ -1875,7 +1904,7 @@ class BldcServo::Impl {
         (pid_position_.Apply(
             (static_cast<int32_t>(
                 (position_.position_relative_raw -
-                 *status_.control_position) >> 32) /
+                 *status_.control_position_raw) >> 32) /
              65536.0f),
             0.0,
             measured_velocity, velocity_command,
@@ -1887,6 +1916,7 @@ class BldcServo::Impl {
         Limit(unlimited_torque_Nm, -max_torque_Nm, max_torque_Nm);
 
     control_.torque_Nm = limited_torque_Nm;
+    status_.torque_error_Nm = status_.torque_Nm - control_.torque_Nm;
 
     const float limited_q_A =
         torque_to_current(limited_torque_Nm *
@@ -1967,7 +1997,8 @@ class BldcServo::Impl {
 
     if (!target_position) {
       status_.pid_position.Clear();
-      status_.control_position = {};
+      status_.control_position_raw = {};
+      status_.control_position = std::numeric_limits<float>::quiet_NaN();
       status_.control_velocity = {};
 
       // In this region, we still apply feedforward torques if they
@@ -1975,6 +2006,7 @@ class BldcServo::Impl {
       const float limited_torque_Nm =
           Limit(data->feedforward_Nm, -data->max_torque_Nm, data->max_torque_Nm);
       control_.torque_Nm = limited_torque_Nm;
+      status_.torque_error_Nm = status_.torque_Nm - control_.torque_Nm;
       const float limited_q_A =
           torque_to_current(
               limited_torque_Nm *
@@ -2035,7 +2067,7 @@ class BldcServo::Impl {
   }
 
   void ISR_MaybeEmitDebug() MOTEUS_CCM_ATTRIBUTE {
-    if (config_.emit_debug == 0) { return; }
+    if (config_.emit_debug == 0 || !debug_uart_) { return; }
 
     debug_buf_[0] = 0x5a;
 
@@ -2052,6 +2084,10 @@ class BldcServo::Impl {
 
     if (config_.emit_debug & (1 << 0)) {
       write_scalar(static_cast<uint16_t>(aux1_port_->status()->spi.value * 4));
+    }
+
+    if (config_.emit_debug & (1 << 1)) {
+      write_scalar(static_cast<int16_t>(32767.0f * status_.velocity / 100.0f));
     }
 
     if (config_.emit_debug & (1 << 2)) {
@@ -2186,6 +2222,7 @@ class BldcServo::Impl {
   Stm32Serial debug_serial_;
 
   USART_TypeDef* debug_uart_ = nullptr;
+  USART_TypeDef* onboard_debug_uart_ = nullptr;
 
   // 7 bytes is the max that we can get out at 3Mbit running at
   // 40000Hz.
@@ -2267,6 +2304,10 @@ const MotorPosition::Status& BldcServo::motor_position() const {
 }
 
 MotorPosition::Config* BldcServo::motor_position_config() {
+  return impl_->motor_position_config();
+}
+
+const MotorPosition::Config* BldcServo::motor_position_config() const {
   return impl_->motor_position_config();
 }
 
