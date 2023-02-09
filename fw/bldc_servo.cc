@@ -508,6 +508,8 @@ class BldcServo::Impl {
 
   void RequireReindex() {
     __disable_irq();
+    aux1_port_->ISR_RequireReindex();
+    aux2_port_->ISR_RequireReindex();
     motor_position_->ISR_RequireReindex();
     __enable_irq();
   }

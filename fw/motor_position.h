@@ -792,7 +792,7 @@ class MotorPosition {
         case SourceConfig::kIndex: {
           const auto& index_status = &this_aux->index;
           if (!index_status->active) { break; }
-          if (index_status->value) {
+          if (index_status->homed) {
             status.offset_value = config.offset;
             status.filtered_value = status.offset_value;
             status.active_theta = true;

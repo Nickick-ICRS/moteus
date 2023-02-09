@@ -259,6 +259,12 @@ class AuxPort {
     }
   }
 
+  void ISR_RequireReindex() {
+    if (index_) {
+        index_->ISR_RequireReindex();
+    }
+  }
+
   void PollMillisecond() {
     if (!i2c_startup_complete_) {
       if (timer_->read_ms() > 10) { i2c_startup_complete_ = true; }
