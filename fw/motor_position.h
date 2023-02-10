@@ -347,6 +347,7 @@ class MotorPosition {
     status_.homed = Status::kRelative;
     for (auto& source : status_.sources) {
       source.active_theta = false;
+      source.active_absolute = false;
     }
     status_.theta_valid = false;
   }
